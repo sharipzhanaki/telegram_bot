@@ -1,0 +1,276 @@
+from datetime import datetime
+from telebot.types import Message
+
+from loader import bot
+from states.search_states import LowPriceStates
+from keyboards.inline.cities import cities_keyboard
+from keyboards.reply.common import yes_no_keyboard, remove_keyboard
+from utils.api.locations_api import search_cities
+from utils.api.hotels_api import search_hotels_lowprice
+from database.models import save_history
+
+
+@bot.message_handler(commands=["lowprice"])
+def command_lowprice(message: Message) -> None:
+    bot.set_state(message.from_user.id, LowPriceStates.city, message.chat.id)
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data.clear()
+    bot.reply_to(message, "Введите город, в котором искать самые дешёвые отели.")
+
+
+@bot.message_handler(state=LowPriceStates.city)
+def handle_city(message: Message) -> None:
+    city_query = message.text.strip()
+    if not city_query:
+        bot.reply_to(message, "Введите название города.")
+        return
+    cities = search_cities(city_query)
+    if not cities:
+        bot.reply_to(message, "Город не найден. Попробуйте другое название.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["cities_map"] = {c["destination_id"]: c["caption"] for c in cities}
+    bot.set_state(message.from_user.id, LowPriceStates.cities, message.chat.id)
+    bot.send_message(message.chat.id, "Уточните пожалуйста город:", reply_markup=cities_keyboard(cities))
+
+
+@bot.message_handler(state=LowPriceStates.adults)
+def handle_adults(message: Message) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.reply_to(message, "Введите число 1 или 2.")
+        return
+    adults = int(text)
+    if adults not in (1, 2):
+        bot.reply_to(message, "Пока поддерживаются только 1 или 2 взрослых.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["adults"] = adults
+    bot.set_state(message.from_user.id, LowPriceStates.count_hotels, message.chat.id)
+    bot.send_message(message.chat.id, "Сколько отелей показать (1–10)?")
+
+
+@bot.message_handler(state=LowPriceStates.count_hotels)
+def handle_count_hotels(message: Message) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.reply_to(message, "Введите число от 1 до 10.")
+        return
+    count = int(text)
+    if not (1 <= count <= 10):
+        bot.reply_to(message, "Количество отелей должно быть от 1 до 10.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["hotels_count"] = count
+    bot.set_state(message.from_user.id, LowPriceStates.min_price, message.chat.id)
+    bot.send_message(
+        message.chat.id,
+        "Введите минимальную цену за ночь (целое число, 0 если не важно):",
+        reply_markup=remove_keyboard(),
+    )
+
+
+@bot.message_handler(state=LowPriceStates.min_price)
+def handle_min_price(message: Message) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.reply_to(message, "Введите минимальную цену целым числом (0 если не важно).")
+        return
+    price_min = int(text)
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["price_min"] = price_min if price_min > 0 else None
+    bot.set_state(message.from_user.id, LowPriceStates.max_price, message.chat.id)
+    bot.send_message(
+        message.chat.id,
+        "Введите максимальную цену за ночь (целое число, 0 если не важно):",
+    )
+
+
+@bot.message_handler(state=LowPriceStates.max_price)
+def handle_max_price(message: Message) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.reply_to(message, "Введите максимальную цену целым числом (0 если не важно).")
+        return
+    price_max = int(text)
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        price_min = data.get("price_min")
+        if price_max != 0 and price_min is not None and price_max <= price_min:
+            bot.reply_to(
+                message,
+                "Максимальная цена должна быть больше минимальной или 0 (не ограничивать).",
+            )
+            return
+        data["price_max"] = price_max if price_max > 0 else None
+    bot.set_state(message.from_user.id, LowPriceStates.photo, message.chat.id)
+    bot.send_message(
+        message.chat.id,
+        "Вывести фотографии отелей?",
+        reply_markup=yes_no_keyboard(),
+    )
+
+
+@bot.message_handler(state=LowPriceStates.photo)
+def handle_photo_need(message: Message) -> None:
+    answer = message.text.strip().lower()
+    with_photos = answer in ("да", "yes", "д", "y")
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["with_photos"] = with_photos
+    if with_photos:
+        bot.set_state(message.from_user.id, LowPriceStates.count_photo, message.chat.id)
+        bot.send_message(
+            message.chat.id,
+            "Сколько фотографий на каждый отель (1–5)?",
+            reply_markup=remove_keyboard(),
+        )
+    else:
+        bot.set_state(message.from_user.id, LowPriceStates.start_date, message.chat.id)
+        bot.send_message(
+            message.chat.id,
+            "Введите дату заезда в формате YYYY-MM-DD:",
+            reply_markup=remove_keyboard(),
+        )
+
+
+@bot.message_handler(state=LowPriceStates.count_photo)
+def handle_count_photo(message: Message) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        bot.reply_to(message, "Введите число от 1 до 5.")
+        return
+    count = int(text)
+    if not (1 <= count <= 5):
+        bot.reply_to(message, "Количество фотографий должно быть от 1 до 5.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["photos_count"] = count
+    bot.set_state(message.from_user.id, LowPriceStates.start_date, message.chat.id)
+    bot.send_message(
+        message.chat.id,
+        "Введите дату заезда в формате YYYY-MM-DD:",
+    )
+
+
+@bot.message_handler(state=LowPriceStates.start_date)
+def handle_start_date(message: Message) -> None:
+    text = message.text.strip()
+    try:
+        check_in = datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        bot.reply_to(message, "Неверный формат. Используйте YYYY-MM-DD.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data["check_in"] = check_in
+    bot.set_state(message.from_user.id, LowPriceStates.end_date, message.chat.id)
+    bot.send_message(message.chat.id, "Введите дату выезда в формате YYYY-MM-DD:")
+
+
+@bot.message_handler(state=LowPriceStates.end_date)
+def handle_end_date(message: Message) -> None:
+    text = message.text.strip()
+    try:
+        check_out = datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        bot.reply_to(message, "Неверный формат. Используйте YYYY-MM-DD.")
+        return
+    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        check_in = data.get("check_in")
+        if check_in and check_out <= check_in:
+            bot.reply_to(message, "Дата выезда должна быть позже даты заезда.")
+            return
+        data["check_out"] = check_out
+        _lowprice_search_and_send(message, data)
+
+
+def _lowprice_search_and_send(message: Message, data: dict) -> None:
+    destination_id = data.get("destination_id")
+    city_name = data.get("city_name")
+    check_in = data.get("check_in")
+    check_out = data.get("check_out")
+    hotels_count = data.get("hotels_count", 5)
+    with_photos = data.get("with_photos", False)
+    photos_count = data.get("photos_count", 0)
+    price_min = data.get("price_min")
+    price_max = data.get("price_max")
+    adults = data.get("adults", 1)
+
+    if not destination_id:
+        bot.send_message(
+            message.chat.id,
+            "Город не выбран. Начните поиск заново (/lowprice).",
+        )
+        bot.delete_state(message.from_user.id, message.chat.id)
+        return
+
+    hotels = search_hotels_lowprice(
+        region_id=destination_id,
+        check_in=check_in,
+        check_out=check_out,
+        adults=adults,
+        results_size=hotels_count,
+        min_price_per_night=price_min,
+        max_price_per_night=price_max,
+    )
+
+    if not hotels:
+        bot.send_message(message.chat.id, "Отели не найдены по заданным параметрам.")
+        bot.delete_state(message.from_user.id, message.chat.id)
+        return
+
+    params_for_history = {
+        "city_name": city_name,
+        "dates_str": f"{check_in} - {check_out}",
+        "mode": "lowprice",
+        "hotels_count": hotels_count,
+        "with_photos": with_photos,
+        "price_min": price_min,
+        "price_max": price_max,
+        "adults": adults,
+    }
+
+    save_history(
+        user_id=message.from_user.id,
+        command="lowprice",
+        params=params_for_history,
+        hotels=hotels,
+    )
+
+    nights = (check_out - check_in).days or 1
+    currency = "USD"
+
+    for hotel in hotels:
+        price_total = hotel.get("price_total")
+        price_nightly = hotel.get("price_nightly")
+
+        lines = [
+            f"Название: {hotel.get('name')}",
+            f"Локация: {hotel.get('city')}",
+            f"Гостей в номере: {adults}",
+        ]
+
+        if price_nightly is not None:
+            lines.append(f"Цена за ночь: {price_nightly} {currency}")
+
+        if price_total is not None:
+            lines.append(
+                f"Цена за весь период ({nights} ночей): {price_total} {currency}"
+            )
+
+        if hotel.get("guest_rating") is not None:
+            lines.append(f"Оценка гостей: {hotel.get('guest_rating')}")
+
+        lines.append(f"Даты: {check_in} - {check_out}")
+
+        booking_url = hotel.get("booking_url")
+        if booking_url:
+            lines.append(f"Ссылка для бронирования: {booking_url}")
+
+        bot.send_message(message.chat.id, "\n".join(lines))
+
+        # Фото теперь берём прямо из properties/v3/list
+        if with_photos and photos_count > 0:
+            photo_urls = hotel.get("photo_urls") or []
+            for url in photo_urls[:photos_count]:
+                bot.send_photo(message.chat.id, photo=url)
+
+    bot.delete_state(message.from_user.id, message.chat.id)
