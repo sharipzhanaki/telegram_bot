@@ -17,15 +17,15 @@ def lowprice_city_choice(call: CallbackQuery) -> None:
     state=GuestRatingStates.cities,
 )
 def guest_rating_city_choice(call: CallbackQuery) -> None:
-    _handle_city_choice(call, LowPriceStates, "guest_rating")
+    _handle_city_choice(call, GuestRatingStates, "guest_rating")
 
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith("city:"),
-    state=GuestRatingStates.cities,
+    state=BestDealStates.cities,
 )
 def bestdeal_city_choice(call: CallbackQuery) -> None:
-    _handle_city_choice(call, LowPriceStates, "bestdeal")
+    _handle_city_choice(call, BestDealStates, "bestdeal")
 
 
 def _handle_city_choice(call: CallbackQuery, states_cls, command_name: str) -> None:

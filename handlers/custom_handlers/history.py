@@ -1,8 +1,22 @@
+import html
 import json
+from datetime import datetime
 from telebot.types import Message
 
 from loader import bot
 from database.models import get_user_history
+from utils.misc.hotel_card import format_hotel_card
+
+
+def _parse_nights(dates_str: str) -> int:
+    """Возвращает число ночей из строки вида '2026-03-25 - 2026-03-30'."""
+    try:
+        parts = dates_str.split(" - ")
+        d1 = datetime.strptime(parts[0].strip(), "%Y-%m-%d").date()
+        d2 = datetime.strptime(parts[1].strip(), "%Y-%m-%d").date()
+        return max((d2 - d1).days, 1)
+    except Exception:
+        return 0
 
 
 @bot.message_handler(commands=["history"])
@@ -18,27 +32,25 @@ def command_history(message: Message) -> None:
         except Exception:
             params = {}
             hotels = []
-        lines = [
-            f"Дата поиска: {record.created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Команда: /{record.command}",
-        ]
         city = params.get("city_name")
         dates = params.get("dates_str")
+        nights = _parse_nights(dates) if dates else 0
+
+        header_lines = [
+            f"<b>Дата поиска:</b> {record.created_at.strftime('%Y-%m-%d %H:%M')}",
+            f"<b>Команда:</b> /{record.command}",
+        ]
         if city:
-            lines.append(f"Город: {city}")
+            header_lines.append(f"<b>Город:</b> {html.escape(city)}")
         if dates:
-            lines.append(f"Даты: {dates}")
+            header_lines.append(f"<b>Даты:</b> {html.escape(dates)}")
+
         if not hotels:
-            lines.append("Отели не найдены.")
-            bot.send_message(message.chat.id, "\n".join(lines))
+            header_lines.append("Отели не найдены.")
+            bot.send_message(message.chat.id, "\n".join(header_lines), parse_mode="HTML")
             continue
+
+        bot.send_message(message.chat.id, "\n".join(header_lines), parse_mode="HTML")
         for hotel in hotels[:3]:
-            lines.append("")
-            lines.append(f"Название: {hotel.get('name')}")
-            lines.append(f"Адрес: {hotel.get('address')}")
-            lines.append(f"Цена: {hotel.get('price')}")
-            if hotel.get("booking_url"):
-                lines.append(f"Бронирование: {hotel.get('booking_url')}")
-            if hotel.get("lat") and hotel.get("lng"):
-                lines.append(f"Координаты: {hotel['lat']}, {hotel['lng']}")
-        bot.send_message(message.chat.id, "\n".join(lines))
+            text = format_hotel_card(hotel, nights=nights, adults=params.get("adults", 1))
+            bot.send_message(message.chat.id, text, parse_mode="HTML")
