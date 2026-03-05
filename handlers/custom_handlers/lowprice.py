@@ -5,8 +5,10 @@ from loader import bot
 from states.search_states import LowPriceStates
 from keyboards.inline.cities import cities_keyboard
 from keyboards.reply.common import yes_no_keyboard, remove_keyboard
+from keyboards.calendar.calendar_kb import create_calendar
 from utils.api.locations_api import search_cities
 from utils.api.hotels_api import search_hotels_lowprice
+from utils.misc.hotel_card import format_hotel_card
 from database.models import save_history
 
 
@@ -125,10 +127,11 @@ def handle_photo_need(message: Message) -> None:
         )
     else:
         bot.set_state(message.from_user.id, LowPriceStates.start_date, message.chat.id)
+        today = datetime.today().date()
         bot.send_message(
             message.chat.id,
-            "Введите дату заезда в формате YYYY-MM-DD:",
-            reply_markup=remove_keyboard(),
+            "Выберите дату заезда:",
+            reply_markup=create_calendar(today.year, today.month),
         )
 
 
@@ -145,41 +148,12 @@ def handle_count_photo(message: Message) -> None:
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
         data["photos_count"] = count
     bot.set_state(message.from_user.id, LowPriceStates.start_date, message.chat.id)
+    today = datetime.today().date()
     bot.send_message(
         message.chat.id,
-        "Введите дату заезда в формате YYYY-MM-DD:",
+        "Выберите дату заезда:",
+        reply_markup=create_calendar(today.year, today.month),
     )
-
-
-@bot.message_handler(state=LowPriceStates.start_date)
-def handle_start_date(message: Message) -> None:
-    text = message.text.strip()
-    try:
-        check_in = datetime.strptime(text, "%Y-%m-%d").date()
-    except ValueError:
-        bot.reply_to(message, "Неверный формат. Используйте YYYY-MM-DD.")
-        return
-    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-        data["check_in"] = check_in
-    bot.set_state(message.from_user.id, LowPriceStates.end_date, message.chat.id)
-    bot.send_message(message.chat.id, "Введите дату выезда в формате YYYY-MM-DD:")
-
-
-@bot.message_handler(state=LowPriceStates.end_date)
-def handle_end_date(message: Message) -> None:
-    text = message.text.strip()
-    try:
-        check_out = datetime.strptime(text, "%Y-%m-%d").date()
-    except ValueError:
-        bot.reply_to(message, "Неверный формат. Используйте YYYY-MM-DD.")
-        return
-    with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-        check_in = data.get("check_in")
-        if check_in and check_out <= check_in:
-            bot.reply_to(message, "Дата выезда должна быть позже даты заезда.")
-            return
-        data["check_out"] = check_out
-        _lowprice_search_and_send(message, data)
 
 
 def _lowprice_search_and_send(message: Message, data: dict) -> None:
@@ -207,10 +181,11 @@ def _lowprice_search_and_send(message: Message, data: dict) -> None:
         check_in=check_in,
         check_out=check_out,
         adults=adults,
-        results_size=hotels_count,
+        results_size=50,
         min_price_per_night=price_min,
         max_price_per_night=price_max,
     )
+    hotels = hotels[:hotels_count]
 
     if not hotels:
         bot.send_message(message.chat.id, "Отели не найдены по заданным параметрам.")
@@ -236,38 +211,17 @@ def _lowprice_search_and_send(message: Message, data: dict) -> None:
     )
 
     nights = (check_out - check_in).days or 1
-    currency = "USD"
 
     for hotel in hotels:
-        price_total = hotel.get("price_total")
-        price_nightly = hotel.get("price_nightly")
+        text = format_hotel_card(
+            hotel,
+            nights=nights,
+            adults=adults,
+            check_in=check_in,
+            check_out=check_out,
+        )
+        bot.send_message(message.chat.id, text, parse_mode="HTML")
 
-        lines = [
-            f"Название: {hotel.get('name')}",
-            f"Локация: {hotel.get('city')}",
-            f"Гостей в номере: {adults}",
-        ]
-
-        if price_nightly is not None:
-            lines.append(f"Цена за ночь: {price_nightly} {currency}")
-
-        if price_total is not None:
-            lines.append(
-                f"Цена за весь период ({nights} ночей): {price_total} {currency}"
-            )
-
-        if hotel.get("guest_rating") is not None:
-            lines.append(f"Оценка гостей: {hotel.get('guest_rating')}")
-
-        lines.append(f"Даты: {check_in} - {check_out}")
-
-        booking_url = hotel.get("booking_url")
-        if booking_url:
-            lines.append(f"Ссылка для бронирования: {booking_url}")
-
-        bot.send_message(message.chat.id, "\n".join(lines))
-
-        # Фото теперь берём прямо из properties/v3/list
         if with_photos and photos_count > 0:
             photo_urls = hotel.get("photo_urls") or []
             for url in photo_urls[:photos_count]:

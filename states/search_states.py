@@ -29,6 +29,8 @@ class GuestRatingStates(StatesGroup):
     cities = State()
     adults = State()
     count_hotels = State()
+    min_price = State()
+    max_price = State()
     photo = State()
     count_photo = State()
     start_date = State()

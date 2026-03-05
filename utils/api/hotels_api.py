@@ -209,6 +209,8 @@ def _extract_properties(
                 region_name=region_name,
                 is_distance_sort=is_distance_sort,
             )
+            if hotel.get("id") is None:
+                continue  # не-отельные карточки (реклама, карты и т.п.)
             hotels.append(hotel)
         except Exception:
             logger.exception("search_hotels: ошибка при разборе карточки: %r", card)
@@ -336,7 +338,8 @@ def _search_hotels(
     def price_ok(h: Dict[str, Any]) -> bool:
         pn = h.get("price_nightly")
         if pn is None:
-            return False
+            # Цена не распарсилась — API уже отфильтровал, пропускаем
+            return True
         if min_price_per_night is not None and pn < min_price_per_night:
             return False
         if max_price_per_night is not None and pn > max_price_per_night:

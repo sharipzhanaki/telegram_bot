@@ -34,13 +34,12 @@ def api_post(path: str, payload:  Dict[str, Any]) -> Dict[str, Any]:
     """Универсальный POST-запрос к hotels4."""
     url = config.BASE_URL + path
     logger.info("POST %s payload=%s", url, json.dumps(payload, ensure_ascii=False))
-    logger.info("POST %s payload=%s", url, payload)
     try:
         response = requests.post(
             url,
             headers=_default_headers(),
             json=payload,
-            timeout=10,
+            timeout=30,
         )
         response.raise_for_status()
         return response.json()
